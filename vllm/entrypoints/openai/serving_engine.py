@@ -1027,7 +1027,7 @@ class OpenAIServing:
                            tokenizer: AnyTokenizer,
                            return_as_token_id: bool = False) -> str:
         if return_as_token_id:
-            return f"token_id:{token_id}"
+            return f"{tokenizer.convert_ids_to_tokens(token_id)}:{token_id}"
 
         if logprob.decoded_token is not None:
             return logprob.decoded_token

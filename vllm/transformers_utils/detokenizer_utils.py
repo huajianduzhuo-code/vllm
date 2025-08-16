@@ -92,7 +92,7 @@ def convert_ids_list_to_tokens(
     token_str_lst = []
     for token_id in token_ids:
         # use default skip_special_tokens.
-        token_str = tokenizer.decode([token_id])
+        token_str = tokenizer.convert_ids_to_tokens(token_id)
         if token_str is None:
             token_str = ""
         token_str_lst.append(token_str)
