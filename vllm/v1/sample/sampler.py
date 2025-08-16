@@ -7,7 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from vllm.config import LogprobsMode
+from vllm.config import ModelConfig, LogprobsMode
 from vllm.utils import is_pin_memory_available
 from vllm.v1.outputs import LogprobsTensors, SamplerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
@@ -61,11 +61,19 @@ class Sampler(nn.Module):
     9. Return the final `SamplerOutput`.
     """
 
-    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs"):
+    def __init__(self, model_config: ModelConfig, logprobs_mode: LogprobsMode = "raw_logprobs"):
         super().__init__()
         self.topk_topp_sampler = TopKTopPSampler()
         self.pin_memory = is_pin_memory_available()
         self.logprobs_mode = logprobs_mode
+
+        # get vocab size
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_config.tokenizer)
+        tokenizer_vocab = tokenizer.get_vocab().values()
+        assert min(tokenizer_vocab) == 0
+        assert len(tokenizer_vocab) == max(tokenizer_vocab) + 1
+        self.vocab_size = len(tokenizer_vocab)
 
     def forward(
         self,
@@ -89,6 +97,8 @@ class Sampler(nn.Module):
         logits = self.apply_allowed_token_ids(logits, sampling_metadata)
         # Apply bad words exclusion.
         logits = self.apply_bad_words(logits, sampling_metadata)
+
+        logits[..., self.vocab_size:] = float("-inf")
 
         # Apply logits processors which can impact greedy sampling
         for processor in (sampling_metadata.logitsprocs.non_argmax_invariant):
