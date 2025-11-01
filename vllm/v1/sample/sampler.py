@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 
-from vllm.config.model import LogprobsMode
+from vllm.config.model import ModelConfig, LogprobsMode
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.outputs import LogprobsTensors, SamplerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
@@ -58,11 +58,36 @@ class Sampler(nn.Module):
     9. Return the final `SamplerOutput`.
     """
 
-    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs"):
+    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs", model_config: ModelConfig = None):
         super().__init__()
         self.topk_topp_sampler = TopKTopPSampler(logprobs_mode)
         self.pin_memory = is_pin_memory_available()
         self.logprobs_mode = logprobs_mode
+
+        # Get tokenizer vocab size to prevent sampling out-of-vocab tokens.
+        # This is needed because the model's vocab_size (from config) can be
+        # larger than the tokenizer's actual vocab_size, especially for models
+        # like Qwen3 that have extra tokens. See processor.py:521-534 for details.
+        self.tokenizer_vocab_size = None
+        if model_config is not None and model_config.tokenizer is not None:
+            try:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_config.tokenizer,
+                    trust_remote_code=model_config.trust_remote_code,
+                )
+                tokenizer_vocab = tokenizer.get_vocab().values()
+                if tokenizer_vocab:
+                    # Validate that vocab IDs are contiguous starting from 0
+                    min_id = min(tokenizer_vocab)
+                    max_id = max(tokenizer_vocab)
+                    if min_id == 0 and len(tokenizer_vocab) == max_id + 1:
+                        self.tokenizer_vocab_size = len(tokenizer_vocab)
+            except Exception:
+                # If we can't load the tokenizer, we'll skip the masking
+                # The LogitsProcessor should still handle most cases
+                pass
+
 
     def forward(
         self,
@@ -287,6 +312,14 @@ class Sampler(nn.Module):
         # Apply bad words exclusion.
         if bad_words_token_ids:
             apply_bad_words(logits, bad_words_token_ids, output_token_ids)
+
+        # Mask out-of-vocab tokens if logits are larger than tokenizer vocab_size.
+        # This prevents sampling tokens that the tokenizer cannot handle.
+        # Only mask if we successfully determined tokenizer_vocab_size and
+        # the logits actually extend beyond it.
+        if (self.tokenizer_vocab_size is not None and
+                logits.shape[-1] > self.tokenizer_vocab_size):
+            logits[..., self.tokenizer_vocab_size:] = float("-inf")
 
         # Apply logits processors which can impact greedy sampling.
         for processor in sampling_metadata.logitsprocs.non_argmax_invariant:
